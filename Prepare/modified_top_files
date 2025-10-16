@@ -1,0 +1,151 @@
+import imod
+import xarray as xr
+import numpy as np
+from pathlib import Path
+import os
+import rioxarray
+import warnings
+
+# Make folders for corrected  files
+output_path_top = Path("P:/11209740-nbracer/Valentina_Uribe/scenarios_files/Island__shape/corrected_files/TOP_CORRECTED")
+output_path_top.mkdir(exist_ok=True)
+output_path_bot = Path("P:/11209740-nbracer/Valentina_Uribe/scenarios_files/Island__shape/corrected_files/BOT_CORRECTED")
+output_path_bot.mkdir(exist_ok=True)
+output_path_ibound = Path("P:/11209740-nbracer/Valentina_Uribe/scenarios_files/Island__shape/corrected_files/IBOUND_CORRECTED")
+output_path_ibound.mkdir(exist_ok=True)
+
+# Load all TOP layers into 3D array
+path_top = Path("P:/11207941-005-terschelling-model/TERSCHELLING_IMOD_MODEL_50X50/TOP")
+top_files = sorted(path_top.glob("TOP_*.IDF"))
+top_layers = imod.idf.open(top_files)
+top_old_all = xr.concat(top_layers, dim="layer")
+
+# Load all BOT layers into 3D array
+path_bot = Path("P:/11207941-005-terschelling-model/TERSCHELLING_IMOD_MODEL_50X50/BOT")
+bot_files = sorted(path_bot.glob("BOTM_*.IDF"))
+bot_layers = imod.idf.open(bot_files)
+bot_old_all = xr.concat(bot_layers, dim="layer")
+
+# Load all IBOUND layers into 3D array
+path_ibound = Path("P:/11207941-005-terschelling-model/TERSCHELLING_IMOD_MODEL_50X50/BND")
+ibound_files = sorted(path_ibound.glob("IBOUND_*.IDF"))
+ibound_layers = imod.idf.open(ibound_files)
+ibound_old_all = xr.concat(ibound_layers, dim="layer")
+
+#Load new TOP as DEM (GeoTIFF)
+top_new_dem = rioxarray.open_rasterio("P:/11209740-nbracer/Valentina_Uribe/scenarios_files/Island__shape/Add_nourishment/DEM_model_2100_with_nourishment.tif")
+top_new = top_new_dem.isel(band=0)
+top_new = top_new.clip(max=10.0)
+warnings.filterwarnings("ignore", message="The `squeeze` kwarg to GroupBy is being removed")
+
+# Vectorized correction using xarray (much faster)
+nlay, nrow, ncol = top_old_all.shape
+
+print("Starting fully vectorized Rule 1 only correction...")
+# Broadcast DEM to 3D shape
+# Robust broadcasting: expand DEM to 3D and broadcast_like model grid
+top_new_expanded = top_new.expand_dims({'layer': top_old_all.layer})
+top_new_3d = top_new_expanded.broadcast_like(top_old_all)
+
+# Rule 1: Deactivate where BOT_old > DEM
+mask_deactivate = (ibound_old_all == 1) & (bot_old_all > top_new_3d)
+ibound_corr = ibound_old_all.where(~mask_deactivate, 0)
+top_corr = top_old_all.where(~mask_deactivate, top_old_all)
+bot_corr = bot_old_all.where(~mask_deactivate, bot_old_all)
+print("Fully vectorized Rule 1 only correction finished.")
+
+# Calculate upper active layer after deactivation
+upper_active_layer = imod.select.upper_active_layer(ibound_corr, is_ibound=True)
+
+# Fully vectorized: set TOP to DEM only in the upper active layer where BOT_old <= DEM and IBOUND=1
+layer_indices = xr.DataArray(
+    np.arange(nlay),
+    dims=['layer'],
+    coords={'layer': top_corr['layer']}
+)
+layer_indices = layer_indices.broadcast_like(top_corr)
+upper_active_broadcast = xr.DataArray(
+    np.broadcast_to((upper_active_layer - 1).values, top_corr.shape),
+    dims=top_corr.dims,
+    coords=top_corr.coords
+)
+mask_upper = (layer_indices == upper_active_broadcast) & (ibound_corr == 1) & (bot_corr <= top_new_3d)
+top_corr = top_corr.where(~mask_upper, top_new_3d)
+bot_corr = bot_corr.where(~mask_upper, bot_corr)
+ibound_corr = ibound_corr.where(~mask_upper, 1)
+print("Rule 2 finished.")
+
+# Select the value of TOP at the upper active layer for each cell
+top_at_upper = top_corr.where(layer_indices == upper_active_broadcast).max(dim="layer")
+
+# Replace layer=0 in top_corr with this value
+top_corr = top_corr.where(layer_indices != 0, top_at_upper)
+top_corr = top_corr.transpose("layer", "y", "x")
+bot_corr= bot_corr.transpose("layer", "y", "x")
+
+# Save files
+imod.idf.save(output_path_top / "TOP", top_corr)
+imod.idf.save(output_path_bot / "BOTM", bot_corr)
+imod.idf.save(output_path_ibound / "IBOUND", ibound_corr)
+
+
+# # Debug: print user-specified cells
+# inspect_cells = [
+#     (119, 557, "East"),
+#     (149, 389, "Nourishment"),
+#     (226, 311, "Polder")
+# ]
+
+# # Print and save debug info for user-specified cells
+# import csv
+# ibound_debug_rows = []
+# for y_idx, x_idx, label in inspect_cells:
+#     print(f"\n--- Inspecting {label} cell at (y={y_idx}, x={x_idx}) ---")
+#     # Find upper active layer for this column (after Rule 1, vectorized)
+#     upper_active = upper_active_layer[y_idx, x_idx]
+#     upper_active_valid = (not np.isnan(upper_active)) and (0 <= int(upper_active) < top_old_all.layer.size)
+#     for k in range(top_old_all.layer.size):
+#         orig_top = float(top_old_all[k, y_idx, x_idx].values)
+#         orig_bot = float(bot_old_all[k, y_idx, x_idx].values)
+#         orig_ibound = int(ibound_old_all[k, y_idx, x_idx].values)
+#         dem_val = float(top_new[y_idx, x_idx].values)
+#         try:
+#             dem_bot = float(top_new_dem.isel(band=0, y=y_idx, x=x_idx).values)
+#         except Exception:
+#             dem_bot = float('nan')
+#         res_top = float(top_corr[k, y_idx, x_idx].values)
+#         res_bot = float(bot_corr[k, y_idx, x_idx].values)
+#         res_ibound = int(ibound_corr[k, y_idx, x_idx].values)
+#         # Rule inference for fully vectorized logic, matching the mask
+#         if orig_ibound != 1:
+#             rule = "Inactive (originally)"
+#         elif (orig_ibound == 1) and (orig_bot > dem_val):
+#             if res_ibound == 0:
+#                 rule = "Deactivated (BOT_old > DEM)"
+#             else:
+#                 rule = "Other (check values)"
+#         elif upper_active_valid and (k == int(upper_active)) and (res_ibound == 1):
+#             if abs(res_top - dem_val) < 1e-6:
+#                 rule = "Set TOP to DEM (upper active layer, vectorized)"
+#             elif abs(res_top - orig_top) < 1e-6:
+#                 rule = "No change (TOP_new == TOP_old, upper active layer)"
+#             else:
+#                 rule = "Other (check values)"
+#         else:
+#             rule = "No change (not upper active layer)"
+#         print(f"  Layer {k}:")
+#         print("    Original TOP:", orig_top)
+#         print("    Original BOT:", orig_bot)
+#         print("    DEM value:", dem_val)
+#         print(f"    Rule applied: {rule}")
+#         print("    Resulting TOP:", res_top)
+#         print("    Resulting BOT:", res_bot)
+#         print("    Resulting IBOUND:", res_ibound)
+#         ibound_debug_rows.append([label, k, orig_top, orig_bot, orig_ibound, dem_val, dem_bot, rule, res_top, res_bot, res_ibound])
+
+# # Save IBOUND debug info to CSV (without col/row, with original IBOUND and DEM bot)
+# with open("ibound_debug_cells.csv", "w", newline="") as f:
+#     writer = csv.writer(f)
+#     writer.writerow(["Location", "Layer", "Orig_TOP", "Orig_BOT", "Orig_IBOUND", "DEM_TOP", "DEM_BOT", "Rule", "Res_TOP", "Res_BOT", "Res_IBOUND"])
+#     writer.writerows(ibound_debug_rows)
+# print("Debug info for inspected cells saved to ibound_debug_cells.csv")

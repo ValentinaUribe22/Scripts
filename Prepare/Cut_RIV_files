@@ -1,0 +1,63 @@
+import os
+import numpy as np
+import pandas as pd
+from pathlib import Path
+import imod
+import xarray as xr
+
+
+# Make folders for corrected  files
+output_path_riv = Path("P:/11209740-nbracer/Valentina_Uribe/scenarios_files/Island__shape/corrected_files/RIV_CORRECTED")
+output_path_riv.mkdir(exist_ok=True)
+
+# Load all RIV_T1_COND layers into 3D array
+path_riv_t1 = Path("P:/11207941-005-terschelling-model/TERSCHELLING_IMOD_MODEL_50X50/RIV")
+riv_files_t1_cond = sorted(path_riv_t1.glob("RIV_T1_RIV_COND*.IDF"))
+riv_layers_t1_cond = imod.idf.open(riv_files_t1_cond)
+riv_old_cond_t1 = xr.concat(riv_layers_t1_cond, dim="layer")
+
+# Load all RIV_T1_BOTTOM layers into 3D array
+riv_files_t1_bottom = sorted(path_riv_t1.glob("RIV_T1_RIV_BOTTOM*.IDF"))
+riv_layers_t1_bottom = imod.idf.open(riv_files_t1_bottom)
+riv_old_bottom_t1 = xr.concat(riv_layers_t1_bottom, dim="layer")
+
+# Load all RIV_Hoogpeil layers into 3D array
+path_riv_h = Path("P:/11207941-005-terschelling-model/TERSCHELLING_IMOD_MODEL_50X50/RIV/HOOGLPEIL")
+riv_files_h = sorted(path_riv_h.glob("RIVLEVEL_HEAD_*.IDF"))
+riv_layers_h = imod.idf.open(riv_files_h)
+riv_old_h = xr.concat(riv_layers_h, dim="layer")
+
+# Debug: List files in Hoogpeil directory to help with pattern matching
+print("Files in HOOGLPEIL directory:")
+for f in os.listdir(path_riv_h):
+    print(f)
+
+# Load all RIV_Laagpeil layers into 3D array
+path_riv_l = Path("P:/11207941-005-terschelling-model/TERSCHELLING_IMOD_MODEL_50X50/RIV/LAAGPEIL")
+riv_files_l = sorted(path_riv_l.glob("RIVLEVEL_HEAD_*.IDF"))
+riv_layers_l = imod.idf.open(riv_files_l)
+riv_old_l = xr.concat(riv_layers_l, dim="layer")
+
+# Load new model top elevations (2D array)
+path_modeltop = r"P:\11209740-nbracer\Valentina_Uribe\scenarios_files\Island__shape\corrected_files\TOP_CORRECTED\TOP_L1.IDF"
+modeltop = imod.idf.open(path_modeltop)
+modeltop = modeltop.isel(layer=0)
+
+# Broadcast modeltop (DEM) to 3D shape of river bottom
+modeltop_3d = modeltop.expand_dims({'layer': riv_old_bottom_t1.layer})
+modeltop_3d = modeltop_3d.broadcast_like(riv_old_bottom_t1)
+
+# Deactivate river cells where river bottom is higher than DEM/top
+mask_deactivate = riv_old_bottom_t1 > modeltop_3d
+riv_masked_cond_t1 = riv_old_cond_t1.where(~mask_deactivate)
+riv_masked_bottom_t1 = riv_old_bottom_t1.where(~mask_deactivate)
+riv_masked_h = riv_old_h.where(~mask_deactivate)
+riv_masked_l = riv_old_l.where(~mask_deactivate)
+print("Deactivated river cells where bottom > DEM/top (vectorized masking applied)")
+
+# Save files
+imod.idf.save(output_path_riv / "T1", riv_masked_cond_t1)
+imod.idf.save(output_path_riv / "HOOGPLEIN", riv_masked_h)
+imod.idf.save(output_path_riv / "LAAGPLEIN", riv_masked_l)
+
+

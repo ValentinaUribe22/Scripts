@@ -1,0 +1,610 @@
+import numpy as np
+import shutil
+import pathlib
+
+## Global variables
+modelname= "rch_50"`
+
+# Run model after writing it
+run_model = False
+
+# Type of model "imod-wq" or "modflow6"
+model_type = "imod_wq"
+
+# If running an iMOD-swq model, specify the parameters below. MF6 is not able to run in parallel yet.
+# Set to True if you want to run the model in parallel, set the cores to the amount of cores available
+run_parallel = True
+cores = 4
+
+# Discretization
+start_time = "01-01-2010"
+end_time = "31-12-2021"
+frequency = "MS" # QS, MS or W. For frequency options see: https://stackoverflow.com/questions/17001389/pandas-resample-documentation 
+cellsize = 20
+zmin = -150.
+zmax = 28. # AHN indicates maximum of 31.26 m
+z_discretization = np.array([-5.0] * 4 + [-1.0] * 4 + [-0.5] * 8 + [-1.0] * 10 + [-10.0] * 4 + [-20.0] * 5)
+
+# Check if discretization matches with zmin and zmax, throw error if it doesn't match up:
+assert z_discretization.sum() == (
+    zmin - zmax
+), "Take heed, your vertical discretization does not add up to (zmax - zmin)"
+
+# Porosity 
+porosity_subsoil = 0.3
+
+# Calculate unconfined, set to True if unconfined, False if Confined.
+unconfined = False
+
+# Storage properties
+specific_storage_constant = 1.e-5
+specific_yield_constant = 0.2
+rootzone_depth = 0.2
+
+## General head boundary (sea) properties
+ghb_conductance = 1000.
+slope_density_conc = 1.25
+density_ref = 1000.0
+conc_ghb = 16.0
+eb = -1.0
+vloed = 0.8
+
+## If you want to use the chloride outputs (last time step) from a previous model run set to True and specify modelname
+use_spin_up_cl = True
+modelname_spin_up = "terschelling_nulmodel_lang"
+
+## Properties drain that simulates overland flow, 1 day for stability
+resistance_drn = 1.0 # Weerstand in dagen
+resistance_drn_lakes = 1.0 # Weerstand in dagen
+
+## Recharge
+rch_concentration = 0.0
+# Set to true if you want to include a spin_up period, spin_up_time indicates the amount of years added before
+spin_up = False
+spin_up_time = 40
+
+## Use new top, this was build into the model to indicate if we want to use the new bottom produced as part of the VCL project
+new_top = False
+
+## Set to yes if you want to save heads and conc to a netcdf, option build in for VCL project
+save_netcdf = False
+
+## All external input paths
+modeldomain_path = "data/1-external/aoi/aoi_model_adj.shp"
+island_shape_path = "data/1-external/aoi/aoi.shp"
+coastline_path = "data/1-external/coastline/nl_imergis_kustlijn_2018.shp"
+path_dijken = f"P:/11207941-005-terschelling-model/terschelling-gw-model/data/1-external/aoi/dijken.shp"
+
+# Modeltop
+ahn_path = "data/1-external/bathy_ahn/ahn2_20m_cmNAP.nc"
+bathymetry_path = "data/1-external/bathy_ahn/BATHY.idf"
+
+# Subsurface
+geotop_path = "data/1-external/subsurface/geotop.nc"
+geotop_water_path = "data/1-external/subsurface/geotop_water_surface.nc"
+geotop_table_path = "data/1-external/subsurface/GeoTOP_k_values_kalibratie2.csv"
+regis_path = "data/1-external/subsurface/regis_v2_2.nc"
+
+# Meteorology
+path_ref_evaporation_KNMI = "data/1-external/meteo/evaporation_19900101_20240622.nc"
+path_precipitation_KNMI = "data/1-external/meteo/precipitation_19900101_20240622.nc"
+
+# Landuse
+path_LGN = "data/1-external/landuse/lgn7/lgn7.idf"
+path_cropfactors = "data/1-external/landuse/Gewasfactoren_GWZ_2016_BramBot.csv"
+path_interception_factors = "data/1-external/landuse/Interceptiefactoren_GWZ_2016_BramBot.csv"
+path_gidsgewas_LGN = "data/1-external/landuse/lgn7/vertaaltabel_LGN7_gewasfactoren.csv"
+
+# Groundwater depth, used for recharge (to select areas with big unsaturated zone)
+path_groundwater_depth = "data/1-external/rch/depth_gws_Huidig.idf"
+
+# Extraction wells
+path_meta_data_wells = "data/1-external/wells/Vitens_Winputten_Onttrekkingen/20210728_Pompputten_Vitens_Terschelling_metadata_csvfiles.csv"
+
+# River network and stages
+path_waterways = "data/1-external/rivers/rivs_only.shp"
+path_waterways_stages = "data/1-external/oppervlaktewater/Peilkaarten shapefile/Peilbeheerkaart.shp"
+path_waterways_lines = "data/1-external/oppervlaktewater/Oppervlaktewater primair en secundair shapefile/Wateren schouwwateren en hoofdwater.shp"
+
+# Kalibratie
+path_waterlopen_westelijk_duingebied = "data/1-external/kalibratie/waterlopen_westelijk_duingebied.shp"
+
+# lakes
+path_lakes = "data/1-external/rivers/lakes.shp"
+
+# Visualization
+path_cross_section_shape = f"data/1-external/aoi/cross_section_lines.shp"
+
+# Skytem
+path_inversie = "data/1-external/skytem/inversie/Q_Terschelling_19_Inv_inv.xyz"
+where_skytem = "data/1-external/aoi/waar_skytem.shp"
+
+# budgets sluizen
+path_sluis_both = "data/1-external/sluizen/afvoer sluizen Terschelling_2011_2020.csv"
+path_kinnum = "data/1-external/sluizen/Kinnum.csv"
+path_liessluis = "data/1-external/sluizen/Liessluis.csv"
+
+# VCL new bottom
+path_new_top = "data/1-external/bathy_ahn/vcl/nieuwe_bodem_v2.tif"
+
+# copy snakefile to interim folder to save the parameter settings
+pathlib.Path(f"data/2-interim/{modelname}").mkdir(
+    exist_ok=True, parents=True
+)
+
+shutil.copy("snakefile", f"data/2-interim/{modelname}/snakefile") 
+
+# ## Overall rule to use to create, run, and visualize the model output
+rule run_and_visualize:
+    input:
+        #f"data/5-visualization/{modelname}/total_mass/total_amount_fresh_water_0.15mgl.png",
+        #f"data/5-visualization/{modelname}/conc_crossections/map.png",
+        f"data/5-visualization/{modelname}/timeseries/map.png",
+        f"data/5-visualization/{modelname}/validate_heads/spatial absolute difference heads.png",
+        #f"data/5-visualization/{modelname}/zoutvracht/zoutvracht.png",
+        #f"data/5-visualization/{modelname}/heads/mean Depth of groundwater.png",
+        #f"data/5-visualization/{modelname}/budgets/modelled_obs_kinnum.png",
+        #f"data/5-visualization/{modelname}/grensvlak/grensvlak_1_gL.png",
+
+rule make_template:
+    input:
+        "src/1-prepare/template.py",
+        # External data
+        path_area = modeldomain_path,
+    params:
+        cellsize=cellsize,
+        zmin=zmin,
+        zmax=zmax,
+        z_discretization=z_discretization,
+    output:
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+    script:
+        "src/1-prepare/template.py"
+
+
+rule make_watermask:
+    input:
+        "src/1-prepare/watermask.py",
+        # External data
+        path_island = island_shape_path,
+        path_lake_water = path_lakes,
+        # Interim paths
+        path_sea = f"data/2-interim/{modelname}/is_sea.nc",
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+    params:
+        sea_level=vloed,
+    output:
+        path_water_masks = f"data/2-interim/{modelname}/water_masks.nc",
+    script:
+        "src/1-prepare/watermask.py"
+
+
+rule make_modeltop:
+    input:
+        "src/1-prepare/modeltop.py",
+        # External data
+        path_ahn = ahn_path,
+        path_bathymetry = bathymetry_path,
+        path_new_top = path_new_top,
+        # Interim paths
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+    params:
+        new_top = new_top,
+    output:
+        path_modeltop = f"data/2-interim/{modelname}/modeltop.nc"
+    script:
+        "src/1-prepare/modeltop.py"
+
+
+rule make_chloride:
+    input: 
+        "src/1-prepare/chloride.py",
+        path_conductivity = f"data/2-interim/{modelname}/conductivity.nc",
+        path_template = f"data/2-interim/{modelname}/template.nc",
+    params:
+        modelname=modelname,
+        use_spin_up_cl = use_spin_up_cl,
+        modelname_spin_up = modelname_spin_up,
+    output:
+        path_chloride = f"data/2-interim/{modelname}/chloride.nc",
+    script:
+        "src/1-prepare/chloride.py"
+
+rule make_subsoil:
+    input:
+        "src/1-prepare/subsoil.py",
+        # External data
+        path_geotop = geotop_path,
+        path_geotop_water = geotop_water_path,
+        path_geotop_table = geotop_table_path,
+        path_regis = regis_path,
+        path_waterways_stages = path_waterways_stages,
+        # Interim data
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+        path_modeltop = f"data/2-interim/{modelname}/modeltop.nc",
+        path_water_masks = f"data/2-interim/{modelname}/water_masks.nc",
+    params:
+        # Porosity
+        porosity_subsoil = porosity_subsoil,
+        # Storage properties
+        specific_storage_constant = specific_storage_constant,
+        specific_yield_constant = specific_yield_constant,
+    output:
+        path_conductivity = f"data/2-interim/{modelname}/conductivity.nc",
+        path_lake_3d = f"data/2-interim/{modelname}/lake_3d.nc",
+    script:
+        "src/1-prepare/subsoil.py"
+
+
+rule make_recharge:
+    input:
+        "src/1-prepare/recharge.py",
+        # External data
+        path_ref_evaporation_KNMI = path_ref_evaporation_KNMI,
+        path_precipitation_KNMI = path_precipitation_KNMI,
+        path_LGN = path_LGN,
+        path_cropfactors = path_cropfactors,
+        path_interception_factors = path_interception_factors,
+        path_groundwater_depth = path_groundwater_depth,
+        path_gidsgewas_LGN = path_gidsgewas_LGN,
+        # Interim data
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+        path_water_mask = f"data/2-interim/{modelname}/water_masks.nc",
+    params:
+        # Discretization
+        start_time = start_time,
+        end_time=end_time,
+        frequency = frequency,
+        rootzone_depth = rootzone_depth,
+        specific_yield_constant = specific_yield_constant,
+        spin_up = spin_up,
+        spin_up_time = spin_up_time,
+    output:
+        path_recharge = f"data/2-interim/{modelname}/recharge.nc",
+    script:
+        "src/1-prepare/recharge.py"
+
+rule make_river:
+    input:
+        "src/1-prepare/riv.py",
+        # External data
+        path_waterways = path_waterways,
+        path_waterways_stages = path_waterways_stages,
+        path_waterways_lines = path_waterways_lines,
+        path_waterlopen_westelijk_duingebied = path_waterlopen_westelijk_duingebied,
+        # Interim data
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+        path_recharge = f"data/2-interim/{modelname}/recharge.nc",
+    output:
+        path_river = f"data/2-interim/{modelname}/river.nc",
+    script:
+        "src/1-prepare/riv.py"
+
+rule make_ghb:
+    input:
+        "ghb.py",
+        # External data
+        path_dijken = path_dijken,
+        # Interim data
+        path_template = f"P:/11207941-005-terschelling-model/terschelling-gw-model/data/2-interim/{modelname}/template.nc",
+        path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+        path_modeltop = f"data/2-interim/{modelname}/modeltop.nc",
+    params:
+        ghb_conductance = ghb_conductance,
+        slope_density_conc = slope_density_conc,
+        density_ref = density_ref,
+        conc_ghb = conc_ghb,
+        eb = eb,
+        vloed = vloed,
+    output:
+        path_ghb = f"P:/11209740-nbracer/Valentina_Uribe/Scenarios/2a.tidal_computation/ghb.nc",
+        path_is_sea = f""P:/11209740-nbracer/Valentina_Uribe/Scenarios/2a.tidal_computation/is_sea.nc"
+    script:
+        "ghb.py"
+
+rule make_drn_lake:
+    input:
+        "src/1-prepare/drn_lake.py",
+        # External data
+        path_waterways_stages = path_waterways_stages,
+        # Interim data
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+        path_lake_3d = f"data/2-interim/{modelname}/lake_3d.nc",
+    params:
+        resistance_drn_lakes = resistance_drn_lakes,
+    output:
+        path_drn_lake = f"data/2-interim/{modelname}/drn_lake.nc",
+    script:
+        "src/1-prepare/drn_lake.py"
+
+rule make_drn:
+    input:
+        "src/1-prepare/drn.py",
+        # Interim data
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+        path_water_mask = f"data/2-interim/{modelname}/water_masks.nc",
+        path_dem = f"data/2-interim/{modelname}/modeltop.nc",
+    params:
+        resistance_drn = resistance_drn,
+    output:
+        path_drn = f"data/2-interim/{modelname}/drn.nc",
+    script:
+        "src/1-prepare/drn.py"
+
+rule make_wells:
+    input:
+        "src/1-prepare/wells.py",
+        # External dataset in case it is available
+        path_meta_data = path_meta_data_wells,
+        # Interim data
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_subsoil = f"data/2-interim/{modelname}/conductivity.nc",
+        path_recharge = f"data/2-interim/{modelname}/recharge.nc",
+        path_dem = f"data/2-interim/{modelname}/modeltop.nc",
+    params:
+        frequency = frequency,
+        start_time = start_time,
+        end_time = end_time,
+        modelname = modelname,
+    output:
+        path_wells = f"data/2-interim/{modelname}/wells.csv"
+    script:
+        "src/1-prepare/wells.py"
+
+rule make_model_imodwq:
+    input:
+        "src/2-build/build_model_imod_wq.py",
+        # Interim data
+        modeldomain_path = modeldomain_path,
+        path_drn = f"data/2-interim/{modelname}/drn.nc",
+        path_ghb = f"data/2-interim/{modelname}/ghb.nc",
+        path_drn_lake = f"data/2-interim/{modelname}/drn_lake.nc",
+        path_conductivity = f"data/2-interim/{modelname}/conductivity.nc",
+        path_recharge = f"data/2-interim/{modelname}/recharge.nc",
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+        path_water_masks = f"data/2-interim/{modelname}/water_masks.nc",
+        path_dem = f"data/2-interim/{modelname}/modeltop.nc",
+        path_sconc = f"data/2-interim/{modelname}/chloride.nc",
+        path_wells = f"data/2-interim/{modelname}/wells.csv",
+        path_river = f"data/2-interim/{modelname}/river.nc",
+    params:
+        modelname = modelname,
+        run_model = run_model,
+        run_parallel = run_parallel,
+        cores = cores,
+        rch_concentration = rch_concentration,
+        frequency = frequency,
+        start_time = start_time,
+        end_time = end_time,
+        unconfined = unconfined,
+        save_netcdf = save_netcdf,
+    output:
+        runfile = f"data/3-input/{modelname}/{modelname}.run"
+    script:
+        "src/2-build/build_model_imod_wq.py"
+
+# rule make_model_mf6:
+#     input:
+#         "src/2-build/build_model.py",
+#         # Interim data
+#         path_drainage = f"data/2-interim/{modelname}/drn.nc",
+#         path_ghb = f"data/2-interim/{modelname}/generalheadboundary.nc",
+#         path_subsoil = f"data/2-interim/{modelname}/conductivity.nc",
+#         path_recharge = f"data/2-interim/{modelname}/recharge.nc",
+#         path_template = f"data/2-interim/{modelname}/template.nc",
+#         path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+#         path_water_mask = f"data/2-interim/{modelname}/water_masks.nc",
+#         path_shd = f"data/2-interim/{modelname}/shd.nc",
+#         path_dem = f"data/2-interim/{modelname}/dem.nc",
+#         path_flood_table = f"data/2-interim/{modelname}/flood_table_{modelname}.csv",
+#         path_wells = f"data/2-interim/{modelname}/extraction_wells.csv",
+#     params:
+#         modelname = modelname,
+#         use_evt = use_evt, 
+#         use_flood = use_flood,
+
+#         starting_concentration = starting_concentration,
+#         rch_concentration = rch_concentration,
+#         run_model = run_model,
+#         run_parallel = run_parallel,
+#         cores = cores,
+#         other_heads = other_heads,
+#         use_wells = use_extraction_wells,
+#     output:
+#         runfile = f"data/3-input/{modelname}/{modelname}.run"
+#     script:
+#         "src/2-build/build_model.py"
+
+rule get_dino_data:
+    input:
+        "src/1-prepare/dino_csv_to_idf.py",
+    output:
+        path_dino_out = "data/2-interim/validation_data/dino_validatie_data.csv",
+    script:
+        "src/1-prepare/dino_csv_to_idf.py"
+
+rule get_vitens_data:
+    input:
+        "src/1-prepare/vitens.py",
+    output:
+        path_vitens_out = "data/2-interim/validation_data/vitens_validatie_data.csv",
+    script:
+        "src/1-prepare/vitens.py"
+
+rule get_waterschap_data:
+    input:
+        "src/1-prepare/waterschap_data.py",
+    output:
+        path_waterschap_out = "data/2-interim/validation_data/waterschap_validatie_data.csv",
+    script:
+        "src/1-prepare/waterschap_data.py"
+
+rule get_skytem_data:
+    input:
+        "src/5-visualize/interpret_inv.py",
+        path_inversie = "data/1-external/skytem/inversie/Q_Terschelling_19_Inv_inv.xyz",
+    output:
+        path_skytem_out = "data/2-interim/validation_data/skytem_zzgrensvlak.shp",
+    script:
+        "src/5-visualize/interpret_inv.py"
+
+rule get_cross_section:
+    input:
+        "src/5-visualize/cross_section.py",
+        # External data
+        path_cross_section_shape = path_cross_section_shape,
+        path_regis = regis_path,
+        # Interim data
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_water_mask = f"data/2-interim/{modelname}/water_masks.nc",
+        path_dem = f"data/2-interim/{modelname}/modeltop.nc",
+        path_subsoil = f"data/2-interim/{modelname}/conductivity.nc",
+        runfile = f"data/3-input/{modelname}/{modelname}.run",
+    params:
+        modelname = modelname,
+        zmin=zmin,
+    output:
+        f"data/5-visualization/{modelname}/conc_crossections/map.png"
+    script:
+        "src/5-visualize/cross_section.py"
+
+rule get_fresh_water_volume:
+    input:
+        "src/5-visualize/freshwater_volume.py",
+        # Interim data
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+        path_subsoil = f"data/2-interim/{modelname}/conductivity.nc",
+        runfile = f"data/3-input/{modelname}/{modelname}.run",
+    params:
+        modelname = modelname,
+    output:
+        f"data/5-visualization/{modelname}/total_mass/total_amount_fresh_water_0.15mgl.png"
+    script:
+        "src/5-visualize/freshwater_volume.py"
+
+rule validate_heads:
+    input:
+        "src/5-visualize/validate_heads.py",
+        runfile = f"data/3-input/{modelname}/{modelname}.run",
+        # External path
+        aoi_shape = island_shape_path,
+        # Interim path
+        path_val_da_dino = "data/2-interim/validation_data/dino_validatie_data.csv",
+        path_val_da_vitens = "data/2-interim/validation_data/vitens_validatie_data.csv",
+        path_waterschap_data = "data/2-interim/validation_data/waterschap_validatie_data.csv",
+        path_template = f"data/2-interim/{modelname}/template.nc",
+    params:
+        modelname = modelname,
+    output:
+        f"data/5-visualization/{modelname}/validate_heads/spatial absolute difference heads.png"
+    script:
+        "src/5-visualize/validate_heads.py"
+
+rule make_time_series:
+    input:
+        "src/5-visualize/timeseries.py",
+        runfile = f"data/3-input/{modelname}/{modelname}.run",
+        # Interim data
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_obs_wells = "data/2-interim/validation_data/dino_validatie_data.csv",
+        path_val_da_vitens = "data/2-interim/validation_data/vitens_validatie_data.csv",
+        path_waterschap_data = "data/2-interim/validation_data/waterschap_validatie_data.csv",
+        path_dem = f"data/2-interim/{modelname}/modeltop.nc",
+    params:
+        modelname = modelname,
+        frequency = frequency,
+    output:
+        f"data/5-visualization/{modelname}/timeseries/map.png"
+    script:
+        "src/5-visualize/timeseries.py"
+
+rule make_seepage:
+    input:
+        "src/5-visualize/seepage.py",
+        runfile = f"data/3-input/{modelname}/{modelname}.run",
+        # External path
+        aoi_shape = island_shape_path,
+    params:
+        modelname = modelname,
+        start_time = start_time,
+        end_time = end_time,
+    output:
+        f"data/5-visualization/{modelname}/zoutvracht/zoutvracht.png"
+    script:
+        "src/5-visualize/seepage.py"
+
+rule make_groundwaterdepth:
+    input:
+        "src/5-visualize/groundwater_depth.py",
+        runfile = f"data/3-input/{modelname}/{modelname}.run",
+        # External path
+        aoi_shape = island_shape_path,
+        # Interim data
+        path_modeltop = f"data/2-interim/{modelname}/modeltop.nc",
+    params:
+        modelname = modelname,
+        start_time = start_time,
+        end_time = end_time,
+    output:
+        f"data/5-visualization/{modelname}/heads/mean Depth of groundwater.png"
+    script:
+        "src/5-visualize/groundwater_depth.py"
+
+rule get_budgets:
+    input:
+        "src/5-visualize/budgets.py",
+        # Interim paths
+        runfile = f"data/3-input/{modelname}/{modelname}.run",
+        path_dem = f"data/2-interim/{modelname}/modeltop.nc",
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+        # External paths
+        path_waterways_stages = path_waterways_stages,
+        path_sluis_both = path_sluis_both,
+        path_kinnum = path_kinnum,
+        path_liessluis = path_liessluis,
+    params:
+        modelname = modelname,
+        frequency = frequency,
+    output:
+        f"data/5-visualization/{modelname}/budgets/modelled_obs_kinnum.png",
+        f"data/5-visualization/{modelname}/budgets/modelled_obs_liessluis.png",
+        f"data/5-visualization/{modelname}/budgets/map.png",
+    script:
+        "src/5-visualize/budgets.py"
+
+rule validate_conc:
+    input:
+        "src/5-visualize/conc_skytem.py",
+        # Interim paths
+        runfile = f"data/3-input/{modelname}/{modelname}.run",
+        path_template = f"data/2-interim/{modelname}/template.nc",
+        path_template_2d = f"data/2-interim/{modelname}/template_2d.nc",
+        path_dem = f"data/2-interim/{modelname}/modeltop.nc",
+        path_skytem = "data/2-interim/validation_data/skytem_zzgrensvlak.shp",
+        path_obs_wells = "data/2-interim/validation_data/dino_validatie_data.csv",
+        path_val_da_vitens = "data/2-interim/validation_data/vitens_validatie_data.csv",
+        path_waterschap_data = "data/2-interim/validation_data/waterschap_validatie_data.csv",
+        # External paths
+        aoi_shape = island_shape_path,
+        where_skytem = where_skytem,
+    params:
+        modelname = modelname,
+        zmin = zmin,
+        zmax = zmax,
+        start_time = start_time,
+        end_time = end_time,
+    output:
+        f"data/5-visualization/{modelname}/grensvlak/grensvlak_1_gL.png"
+    script:
+        "src/5-visualize/conc_skytem.py"
