@@ -7,6 +7,10 @@ models = [
     {"name": "hd_s1", "label": "Hd_S3", "color": "blue"},
 ]
 modelname_set = "S2"
+
+# Choose which dz calculation to use
+USE_CALCULATED_DZ = True  # Set to False to use template dz instead
+
 external_path = "P:/11207941-005-terschelling-model/terschelling-gw-model/data"
 results_path = "P:/11209740-nbracer/Valentina_Uribe/Terschelling_model/RESULTS"
 template_path = f"{external_path}/2-interim/rch_50/template.nc"
@@ -32,6 +36,39 @@ import os
 from datetime import datetime
 import matplotlib.lines as mlines
 
+# Read top and bot files and calculate dz per layer
+print("Reading TOP and BOT files...")
+top_files = imod.idf.open(top_idf_path_S2)
+bot_files = imod.idf.open(bot_idf_path_S2)
+
+# Sort by layer to ensure correct order
+top_files = top_files.sortby('layer')
+bot_files = bot_files.sortby('layer')
+
+print(f"TOP files shape: {top_files.shape}")
+print(f"BOT files shape: {bot_files.shape}")
+
+# Calculate dz for each layer (top - bottom of same layer)
+# For the first layer, use model top - first bot
+# For other layers, use previous bot - current bot
+dz_calculated = xr.zeros_like(bot_files)
+
+for layer_idx in range(len(bot_files.layer)):
+    layer = bot_files.layer.values[layer_idx]
+    print(f"Calculating dz for layer {layer}")
+
+    if layer_idx == 0:
+        # First layer: model top - first bottom
+        dz_calculated[dict(layer=layer_idx)] = top_files.isel(layer=0) - bot_files.isel(layer=0)
+    else:
+        # Other layers: previous bottom - current bottom
+        dz_calculated[dict(layer=layer_idx)] = bot_files.isel(layer=layer_idx-1) - bot_files.isel(layer=layer_idx)
+
+# Assign the calculated dz values to the template-like structure
+dz_values = dz_calculated.values
+print(f"Calculated dz shape: {dz_values.shape}")
+print(f"Calculated dz values for ALL layers: {np.mean(dz_values, axis=(1,2))}")
+
 def read_conc(scenario):
     all_conc = []
     print(scenario)
@@ -41,16 +78,31 @@ def read_conc(scenario):
         all_conc.append(conc)
 
     concated_data = xr.concat(all_conc, dim="time")
-    concated_data = concated_data.assign_coords(dz=("layer", like.dz.values))
+
+    # Choose which dz to use based on flag
+    if USE_CALCULATED_DZ:
+        print("Using calculated dz from TOP/BOT files")
+        concated_data = concated_data.assign_coords(dz=("layer", dz_calculated_mean))
+    else:
+        print("Using template dz")
+        concated_data = concated_data.assign_coords(dz=("layer", dz_template))
+
     return concated_data
 
-# Open templates
-
+# Open template
 like = xr.open_dataset(template_path)["template"]
 dx, xmin, xmax, dy, ymin, ymax = imod.util.spatial_reference(like)
 zmin = like.zbot.min()
 zmax = like.ztop.max()
-dz = np.abs(like.dz.values)
+
+# Keep both dz options
+dz_template = np.abs(like.dz.values)
+dz_calculated_mean = np.abs(dz_values.mean(axis=(1,2)))
+
+print(f"Template dz (all layers): {dz_template}")
+print(f"Calculated dz (all layers): {dz_calculated_mean}")
+
+
 
 # get dataset chloride
 folder_path = reference_conc_folder
